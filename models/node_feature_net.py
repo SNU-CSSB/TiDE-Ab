@@ -12,11 +12,7 @@ class NodeFeatureNet(nn.Module):
         self.c_pos_emb = self._cfg.c_pos_emb
         self.c_timestep_emb = self._cfg.c_timestep_emb
 
-        embed_size = self._cfg.c_pos_emb + self._cfg.c_timestep_emb + 1
-        if self._cfg.embed_chain: embed_size += 3
-        if self._cfg.embed_aa: embed_size += 21
-        if self._cfg.use_1d_hotspot: embed_size += 1
-
+        embed_size = self._cfg.c_pos_emb + self._cfg.c_timestep_emb + 3 + 21 + 1
         self.linear = nn.Linear(embed_size, self.c_s)
 
     def embed_t(self, timesteps, mask):
@@ -28,12 +24,6 @@ class NodeFeatureNet(nn.Module):
 
         # [b, n_res, c_pos_emb]
         res_idx_emb = get_index_embedding(res_idx, self.c_pos_emb, max_len=2056)
-        input_feats = [res_idx_emb, node_mask.unsqueeze(-1), self.embed_t(ts_, node_mask)]
-        if self._cfg.embed_chain:
-            input_feats.append(chain_idx)
-        if self._cfg.embed_aa:
-            input_feats.append(aatype_idx)
-        if self._cfg.use_1d_hotspot:
-            input_feats.append(hotspot_1d)
+        input_feats = [res_idx_emb, self.embed_t(ts_, node_mask), chain_idx, aatype_idx, hotspot_1d]
 
         return self.linear(torch.cat(input_feats, dim=-1))

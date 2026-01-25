@@ -1,0 +1,14 @@
+data:
+  loader:
+    num_workers: 0
+    prefetch_factor: 10
+  sampler:
+    batch_size: 1
+  dataset:
+    root_dir: /public_data/data/processed_antibody
+    csv_path: ./data/splits/metadata_{split}.csv
+    cluster_path: ./data/splits/antibody_cluster.json
+    rand_rot: true
+    center_epitope: true
+    hotspot_ratio_max: 1.0
+    hotspot_ratio_min: 0.5

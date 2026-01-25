@@ -11,17 +11,17 @@ from tqdm import tqdm
 import numpy as np
 
 
-def _centered_gaussian(num_batch, num_res, device, dtype, seed=None):
+def _centered_gaussian(num_batch, num_res, device, seed=None):
     if seed:
         torch.manual_seed(seed)
-    noise = torch.randn(num_batch, num_res, 3, device=device, dtype=dtype)
+    noise = torch.randn(num_batch, num_res, 3, device=device)
     return noise - torch.mean(noise, dim=-2, keepdims=True)
 
-def _uniform_so3(num_batch, num_res, device, dtype, seed=None):
+def _uniform_so3(num_batch, num_res, device, seed=None):
     if seed:
         torch.manual_seed(seed)
         np.random.seed(seed)
-    noise = torch.tensor(Rotation.random(num_batch*num_res).as_matrix(), device=device, dtype=dtype).reshape(num_batch, num_res, 3, 3)
+    noise = torch.tensor(Rotation.random(num_batch*num_res).as_matrix(), device=device).reshape(num_batch, num_res, 3, 3)
     return noise
 
 def _trans_diffuse_mask(trans_t, trans_1, diffuse_mask):
@@ -33,12 +33,13 @@ def _rots_diffuse_mask(rotmats_t, rotmats_1, diffuse_mask):
 
 class Interpolant:
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, use_cfg=True):
         self._cfg = cfg
         self._rots_cfg = cfg.rots
         self._trans_cfg = cfg.trans
         self._sample_cfg = cfg.sampling
         self._igso3 = None
+        self.use_cfg = use_cfg
 
     @property
     def igso3(self):
@@ -50,15 +51,13 @@ class Interpolant:
     def set_device(self, device):
         self._device = device
 
-    def set_dtype(self, dtype):
-        self._dtype = dtype    
-
     def sample_t(self, num_batch):
-        t = torch.rand(num_batch, device=self._device, dtype=self._dtype)
+        t = torch.rand(num_batch, device=self._device)
         return t * (1 - 2*self._cfg.min_t) + self._cfg.min_t
 
     def _corrupt_trans(self, trans_1, t, res_mask, diffuse_mask):
-        trans_nm_0 = _centered_gaussian(*res_mask.shape, self._device, dtype=self._dtype)
+        num_batch, num_res, _ = trans_1.shape
+        trans_nm_0 = _centered_gaussian(num_batch, num_res, self._device)
         trans_0 = trans_nm_0 * du.NM_TO_ANG_SCALE
         trans_t = (1 - t[..., None]) * trans_0 + t[..., None] * trans_1
         trans_t = _trans_diffuse_mask(trans_t, trans_1, diffuse_mask)
@@ -66,11 +65,11 @@ class Interpolant:
     
     def _corrupt_rotmats(self, rotmats_1, t, res_mask, diffuse_mask):
         num_batch, num_res = res_mask.shape
-        noisy_rotmats = self.igso3.sample(torch.tensor([1.5]), num_batch*num_res).to(self._device, self._dtype)
+        noisy_rotmats = self.igso3.sample(torch.tensor([1.5]), num_batch*num_res).to(self._device)
         noisy_rotmats = noisy_rotmats.reshape(num_batch, num_res, 3, 3)
         rotmats_0 = torch.einsum("...ij,...jk->...ik", rotmats_1, noisy_rotmats)
         rotmats_t = so3_utils.geodesic_t(t[..., None], rotmats_1, rotmats_0)
-        identity = torch.eye(3, device=self._device, dtype=self._dtype)
+        identity = torch.eye(3, device=self._device)
         rotmats_t = (rotmats_t * res_mask[..., None, None] + identity[None, None] * (1 - res_mask[..., None, None]))
         return _rots_diffuse_mask(rotmats_t, rotmats_1, diffuse_mask)
 
@@ -134,7 +133,17 @@ class Interpolant:
             raise ValueError(f'Unknown sample schedule {self._rots_cfg.sample_schedule}')
         return so3_utils.geodesic_t(scaling * d_t, rotmats_1, rotmats_t)
 
-    def sample(self, model, batch, num_timesteps=None, trans_potential=None, trans_0=None, rotmats_0=None, ts=None, seed=None, get_aapred=False):
+    def apply_cfg(self, pred_trans_1, neg_pred_trans_1, pred_rotmats_1, neg_pred_rotmats_1, gd_scale):
+        pred_trans_1 = pred_trans_1 + gd_scale * (pred_trans_1 - neg_pred_trans_1)
+
+        # pred_rotmats_1, pred_rotmats_1_uncond = pred_rotmats_1.chunk(2)
+        # pred_rotmats_1 = so3_utils.geodesic_t(gd_scale, pred_rotmats_1, neg_pred_rotmats_1)
+        # batch['t'], _ = batch['t'].chunk(2)
+        # pred_rotmats_1 = torch.cat([pred_rotmats_1, neg_pred_rotmats_1])
+        
+        return pred_trans_1, pred_rotmats_1
+
+    def sample(self, model, batch, num_timesteps=None, trans_potential=None, trans_0=None, rotmats_0=None, ts=None, seed=None):
         res_mask = batch['res_mask']
         num_batch, num_res = res_mask.shape
         diffuse_mask = batch['diffuse_mask']
@@ -142,11 +151,12 @@ class Interpolant:
         trans_1 = batch['trans_1']
         rotmats_1 = batch['rotmats_1']
         
+
         # Set-up initial prior samples
         if 'trans_0' not in batch:
-            trans_0 = _centered_gaussian(num_batch, num_res, self._device, self._dtype, seed) * du.NM_TO_ANG_SCALE
+            trans_0 = _centered_gaussian(num_batch, num_res, self._device, seed) * du.NM_TO_ANG_SCALE
         if 'rotmats_0' not in batch:
-            rotmats_0 = _uniform_so3(num_batch, num_res, self._device, self._dtype, seed)
+            rotmats_0 = _uniform_so3(num_batch, num_res, self._device, seed)
 
         if not self._cfg.twisting.use: # amortisation
             diffuse_mask = diffuse_mask.expand(num_batch, -1) # shape = (B, num_residue)
@@ -173,7 +183,7 @@ class Interpolant:
                                                                            num_rots=self._cfg.twisting.num_rots, align=self._cfg.twisting.align, 
                                                                            scale=self._cfg.twisting.scale_rots, trans_motif=trans_motif, 
                                                                            R_motif=R_motif, max_offsets=self._cfg.twisting.max_offsets, 
-                                                                           device=self._device, dtype=self._dtype, return_rots=False)
+                                                                           device=self._device, return_rots=False)
 
         if motif_mask is not None and len(motif_mask.shape) == 1:
             motif_mask = motif_mask[None].expand((num_batch, -1))
@@ -186,9 +196,11 @@ class Interpolant:
             ts = torch.linspace(self._cfg.min_t, 1.0, num_timesteps)
             
         t_1 = ts[0]
-
         prot_traj = [(trans_0, rotmats_0)]
         clean_traj = []
+
+        cfg_gd_sched = 1.0 * (1 + (torch.cos(torch.pi*ts)+1)/2) # cosine annealing
+        cfg_gd_sched[int(len(ts)*0.5):] = 0.0 # early truncation
 
         with tqdm(total=len(ts[1:]), bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}') as pbar:
             
@@ -208,7 +220,7 @@ class Interpolant:
                     if rotmats_1 is None:
                         raise ValueError('Must provide rotmats_1 if not corrupting.')
                     batch['rotmats_t'] = rotmats_1
-                batch['ts_'] = torch.ones((num_batch, 1), device=self._device, dtype=self._dtype) * t_1
+                batch['t'] = torch.ones((num_batch, 1), device=self._device) * t_1
                 d_t = t_2 - t_1
     
                 use_twisting = self._cfg.twisting.use and t_1 >= self._cfg.twisting.t_min
@@ -217,7 +229,7 @@ class Interpolant:
                     with torch.inference_mode(False):
                         batch, Log_delta_R, delta_x = twisting.perturbations_for_grad(batch)
                         model_out = model(batch)
-                        t = batch['ts_']
+                        t = batch['t']
                         trans_t_1, rotmats_t_1, logs_traj = self.guidance(trans_t_1, rotmats_t_1, model_out, motif_mask, R_motif, 
                                                                           trans_motif, Log_delta_R, delta_x, t, d_t, logs_traj)
                 else:
@@ -227,6 +239,20 @@ class Interpolant:
                 # Process model output.
                 pred_trans_1 = model_out['pred_trans']
                 pred_rotmats_1 = model_out['pred_rotmats']
+
+                if self.use_cfg:
+                    with torch.no_grad():
+                        neg_batch = {}
+                        for k,v in batch.items():
+                            neg_batch[k] = v
+                            if k in ['hotspot_1d', 'hotspot_2d']:
+                                neg_batch[k] = torch.zeros_like(v)
+                        neg_model_out = model(neg_batch)
+                    neg_pred_trans_1 = neg_model_out['pred_trans']
+                    neg_pred_rotmats_1 = neg_model_out['pred_rotmats']
+                    if self.use_cfg:
+                        pred_trans_1, pred_rotmats_1 = self.apply_cfg(pred_trans_1, neg_pred_trans_1, pred_rotmats_1, neg_pred_rotmats_1, cfg_gd_sched[i])
+
                 clean_traj.append((pred_trans_1.detach().cpu(), pred_rotmats_1.detach().cpu()))
                 batch['trans_sc'] = (pred_trans_1 * diffuse_mask[..., None] + trans_1 * (1 - diffuse_mask[..., None]))
     
@@ -265,11 +291,25 @@ class Interpolant:
             if rotmats_1 is None:
                 raise ValueError('Must provide rotmats_1 if not corrupting.')
             batch['rotmats_t'] = rotmats_1
-        batch['t'] = torch.ones((num_batch, 1), device=self._device, dtype=self._dtype) * t_1
+        batch['ts_'] = torch.ones((num_batch, 1), device=self._device) * t_1
         with torch.no_grad():
             model_out = model(batch)
         pred_trans_1 = model_out['pred_trans']
         pred_rotmats_1 = model_out['pred_rotmats']
+
+        if self.use_cfg:
+            neg_batch = {}
+            for k,v in batch.items():
+                neg_batch[k] = v
+                if k in ['hotspot_1d', 'hotspot_2d']:
+                    neg_batch[k] = torch.zeros_like(v)
+            with torch.no_grad():
+                neg_model_out = model(neg_batch)
+            neg_pred_trans_1 = neg_model_out['pred_trans']
+            neg_pred_rotmats_1 = neg_model_out['pred_rotmats']
+            if self.use_cfg:
+                pred_trans_1, pred_rotmats_1 = self.apply_cfg(pred_trans_1, neg_pred_trans_1, pred_rotmats_1, neg_pred_rotmats_1, cfg_gd_sched[i])
+
         clean_traj.append((pred_trans_1.detach().cpu(), pred_rotmats_1.detach().cpu()))
         prot_traj.append((pred_trans_1, pred_rotmats_1))
 
@@ -277,7 +317,4 @@ class Interpolant:
         atom37_traj = all_atom.transrot_to_atom37(prot_traj, res_mask)
         clean_atom37_traj = all_atom.transrot_to_atom37(clean_traj, res_mask)
         
-        if get_aapred:
-            return atom37_traj, clean_atom37_traj, clean_traj, model_out['aa_logits']
-        else:
-            return atom37_traj, clean_atom37_traj, clean_traj
+        return atom37_traj, clean_atom37_traj, clean_traj

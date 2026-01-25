@@ -1,0 +1,74 @@
+defaults:
+  - _self_
+  - data
+  - model
+
+interpolant:
+  min_t: 1e-2
+  twisting:
+    use: False
+  rots:
+    corrupt: True
+    sample_schedule: exp
+    exp_rate: 10
+  trans:
+    corrupt: True
+    batch_ot: True
+    sample_schedule: linear
+    sample_temp: 1.0
+    vpsde_bmin: 0.1
+    vpsde_bmax: 20.0
+    potential: null
+    potential_t_scaling: False
+    rog:
+      weight: 10.0
+      cutoff: 5.0
+  sampling:
+    num_timesteps: 100
+    do_sde: False
+  self_condition: ${model.edge_features.self_condition}
+  inference_dir: './results'
+
+experiment:
+  seed: 123
+  num_devices: 4
+  warm_start: null
+  warm_start_cfg_override: True
+  training:
+    mask_plddt: True
+    bb_atom_scale: 0.1
+    translation_loss_weight: 2.0
+    t_normalize_clip: 0.9
+    rotation_loss_weights: 1.0
+    aux_loss_weight: 1.5
+    aux_loss_use_bb_loss: true
+    aux_loss_use_pair_loss: true
+    aux_loss_t_pass: 0.3
+    start_steric_loss: 200
+    clash_loss_weight: 0.01
+    clash_loss_t_pass: 0.3
+    bond_loss_weight: 0.0
+    clash_overlap_tolerance_soft: 1.0
+    clash_tolerance_factor_soft: 1.0
+
+  wandb:
+    name: tide_ab_v1
+    project: tide_ab
+  optimizer:
+    lr: 0.0001
+  trainer:
+    overfit_batches: 0
+    min_epochs: 1
+    max_epochs: 1000
+    accelerator: gpu
+    log_every_n_steps: 10
+    deterministic: False
+    strategy: auto
+    check_val_every_n_epoch: 5
+    accumulate_grad_batches: 2
+  checkpointer:
+    dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    save_last: True
+    save_top_k: 3
+    monitor: valid/trans_loss
+    mode: min

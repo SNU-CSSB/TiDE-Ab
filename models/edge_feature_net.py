@@ -14,18 +14,10 @@ class EdgeFeatureNet(nn.Module):
         self.relpos_n_bin = 2 * self._cfg.relpos_k + 2
     
         self.linear_s_p = nn.Linear(self.c_s, self.feat_dim)
-        
-        if self._cfg.ori_rel_pos:
-            self.linear_relpos = nn.Linear(self.feat_dim, self.feat_dim)
-        else:
-            self.linear_relpos = nn.Linear(self.relpos_n_bin, self.feat_dim, bias=False)
+        self.linear_relpos = nn.Linear(self.relpos_n_bin, self.feat_dim, bias=False)
     
-        total_edge_feats = self.feat_dim * 3 + self._cfg.num_bins * 2
-        if self._cfg.use_2d_hotspot: total_edge_feats += 1
-        if self._cfg.same_diff_disto: 
-            total_edge_feats -= self._cfg.num_bins
-            total_edge_feats += 1
-        
+        total_edge_feats = self.feat_dim * 3 + self._cfg.num_bins + 1 + 1
+
         self.edge_embedder = nn.Sequential(
             nn.Linear(total_edge_feats, self.c_p),
             nn.ReLU(),
@@ -41,15 +33,11 @@ class EdgeFeatureNet(nn.Module):
         # Input: [b, n_res]
         # [b, n_res, n_res]
         d = r[:, :, None] - r[:, None, :]
-        if self._cfg.ori_rel_pos:
-            pos_emb = get_index_embedding(d, self._cfg.feat_dim, max_len=2056)
-            return self.linear_relpos(pos_emb)
-        else:
-            d_same_chain = torch.clip(r[:, :, None] - r[:, None, :] + self.relpos_k, 0, 2 * self.relpos_k)
-            d_diff_chain = torch.ones_like(d_same_chain) * (2 * self.relpos_k + 1) 
-            d = d_same_chain * is_same_chain + d_diff_chain * ~is_same_chain
-            oh = nn.functional.one_hot(d.long(), num_classes=self.relpos_n_bin).float()
-            return self.linear_relpos(oh)
+        d_same_chain = torch.clip(r[:, :, None] - r[:, None, :] + self.relpos_k, 0, 2 * self.relpos_k)
+        d_diff_chain = torch.ones_like(d_same_chain) * (2 * self.relpos_k + 1) 
+        d = d_same_chain * is_same_chain + d_diff_chain * ~is_same_chain
+        oh = nn.functional.one_hot(d.long(), num_classes=self.relpos_n_bin).float()
+        return self.linear_relpos(oh)
 
     def _cross_concat(self, feats_1d, num_batch, num_res):
         return torch.cat([
@@ -68,14 +56,7 @@ class EdgeFeatureNet(nn.Module):
         
         relpos_feats = self.embed_relpos(res_idx, res_mask, is_same_chain)
 
-        all_edge_feats = [cross_node_feats, relpos_feats, dist_feats]
-        if not self._cfg.same_diff_disto:
-            all_edge_feats.append(sc_feats)
-        if self._cfg.use_2d_hotspot:
-            all_edge_feats.append(hotspot_2d)
-        if self._cfg.same_diff_disto:
-            all_edge_feats.append(disto_cond_mask)
-            
+        all_edge_feats = [cross_node_feats, relpos_feats, dist_feats, hotspot_2d, disto_cond_mask]
         edge_feats = self.edge_embedder(torch.concat(all_edge_feats, dim=-1))
         edge_feats *= p_mask.unsqueeze(-1)
         return edge_feats
