@@ -135,12 +135,6 @@ class Interpolant:
 
     def apply_cfg(self, pred_trans_1, neg_pred_trans_1, pred_rotmats_1, neg_pred_rotmats_1, gd_scale):
         pred_trans_1 = pred_trans_1 + gd_scale * (pred_trans_1 - neg_pred_trans_1)
-
-        # pred_rotmats_1, pred_rotmats_1_uncond = pred_rotmats_1.chunk(2)
-        # pred_rotmats_1 = so3_utils.geodesic_t(gd_scale, pred_rotmats_1, neg_pred_rotmats_1)
-        # batch['t'], _ = batch['t'].chunk(2)
-        # pred_rotmats_1 = torch.cat([pred_rotmats_1, neg_pred_rotmats_1])
-        
         return pred_trans_1, pred_rotmats_1
 
     def sample(self, model, batch, num_timesteps=None, trans_potential=None, trans_0=None, rotmats_0=None, ts=None, seed=None):
