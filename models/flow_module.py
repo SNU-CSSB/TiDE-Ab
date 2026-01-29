@@ -122,7 +122,7 @@ class FlowModule(LightningModule):
         pred_rotmats_1 = model_output['pred_rotmats']
 
         # Translation VF loss
-        trans_error = (gt_trans_1 - pred_trans_1) / ts_norm_scale
+        trans_error = (gt_trans_1 - pred_trans_1) / ts_norm_scale * training_cfg.trans_scale
         mse_loss = training_cfg.translation_loss_weight * torch.sum(
             trans_error ** 2 * loss_mask[..., None],
             dim=(-1, -2)
@@ -275,49 +275,6 @@ class FlowModule(LightningModule):
         return val_loss
 
 
-    # def validation_step(self, batch: Any, batch_idx: int):
-    #     res_mask = batch['res_mask']
-    #     self.interpolant.set_device(res_mask.device)
-    #     num_batch, num_res = res_mask.shape
-    #     diffuse_mask = batch['diffuse_mask']
-    #     # csv_idx = batch['csv_idx']
-    #     atom37_traj, _, _ = self.interpolant.sample(
-    #         num_batch,
-    #         num_res,
-    #         self.model,
-    #         trans_1=batch['trans_1'],
-    #         rotmats_1=batch['rotmats_1'],
-    #         diffuse_mask=diffuse_mask,
-    #         chain_idx=batch['chain_idx'],
-    #         res_idx=batch['res_idx'],
-    #     )
-    #     samples = atom37_traj[-1].numpy()
-    #     batch_metrics = []
-    #     for i in range(num_batch):
-    #         sample_dir = os.path.join(self.checkpoint_dir, f'sample_idx_{batch_idx}_len_{num_res}')
-    #         os.makedirs(sample_dir, exist_ok=True)
-
-    #         # Write out sample to PDB file
-    #         final_pos = samples[i]
-    #         saved_path = au.write_prot_to_pdb(
-    #             final_pos,
-    #             os.path.join(sample_dir, 'sample.pdb'),
-    #             no_indexing=True
-    #         )
-    #         # if isinstance(self.logger, WandbLogger):
-    #         #     self.validation_epoch_samples.append(
-    #         #         [saved_path, self.global_step, wandb.Molecule(saved_path)]
-    #         #     )
-
-    #         mdtraj_metrics = metrics.calc_mdtraj_metrics(saved_path)
-    #         ca_idx = residue_constants.atom_order['CA']
-    #         ca_ca_metrics = metrics.calc_ca_ca_metrics(final_pos[:, ca_idx])
-    #         batch_metrics.append((mdtraj_metrics | ca_ca_metrics))
-
-    #     batch_metrics = pd.DataFrame(batch_metrics)
-    #     self.validation_epoch_metrics.append(batch_metrics)
-        
-
     def on_validation_epoch_end(self):
         if not self.validation_epoch_metrics:
             return
@@ -336,27 +293,6 @@ class FlowModule(LightningModule):
             )
             
         self.validation_epoch_metrics.clear()
-
-
-
-    # def on_validation_epoch_end(self):
-    #     if len(self.validation_epoch_samples) > 0:
-    #         self.logger.log_table(
-    #             key='valid/samples',
-    #             columns=["sample_path", "global_step", "Protein"],
-    #             data=self.validation_epoch_samples)
-    #         self.validation_epoch_samples.clear()
-    #     val_epoch_metrics = pd.concat(self.validation_epoch_metrics)
-    #     for metric_name,metric_val in val_epoch_metrics.mean().to_dict().items():
-    #         self._log_scalar(
-    #             f'valid/{metric_name}',
-    #             metric_val,
-    #             on_step=False,
-    #             on_epoch=True,
-    #             prog_bar=False,
-    #             batch_size=len(val_epoch_metrics),
-    #         )
-    #     self.validation_epoch_metrics.clear()
 
 
     def _log_scalar(
@@ -436,10 +372,6 @@ class FlowModule(LightningModule):
         device = f'cuda:{torch.cuda.current_device()}'
         interpolant = Interpolant(self._infer_cfg) 
         interpolant.set_device(device)
-
-        # sample_ids = batch['sample_id'].squeeze().tolist()
-        # sample_ids = [sample_ids] if isinstance(sample_ids, int) else sample_ids
-        # num_batch = len(sample_ids)
 
         sample_names = batch['file_path']
         if isinstance(sample_names, str):

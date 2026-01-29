@@ -36,6 +36,7 @@ experiment:
   warm_start_cfg_override: True
   training:
     mask_plddt: True
+    trans_scale: 0.1
     bb_atom_scale: 0.1
     translation_loss_weight: 2.0
     t_normalize_clip: 0.9
@@ -43,10 +44,10 @@ experiment:
     aux_loss_weight: 1.5
     aux_loss_use_bb_loss: true
     aux_loss_use_pair_loss: true
-    aux_loss_t_pass: 0.3
+    aux_loss_t_pass: 0.5
     start_steric_loss: 200
     clash_loss_weight: 0.01
-    clash_loss_t_pass: 0.3
+    clash_loss_t_pass: 0.5
     bond_loss_weight: 0.0
     clash_overlap_tolerance_soft: 1.0
     clash_tolerance_factor_soft: 1.0
@@ -61,7 +62,7 @@ experiment:
     min_epochs: 1
     max_epochs: 1000
     accelerator: gpu
-    log_every_n_steps: 10
+    log_every_n_steps: 500
     deterministic: False
     strategy: auto
     check_val_every_n_epoch: 5

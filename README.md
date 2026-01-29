@@ -41,7 +41,7 @@ python train.py optimizer.lr=0.0005
 
 #### 1. Download Pre-trained Weights
 First, download the pre-trained model weights and place the file in the `checkpoints/` directory:
-* [**weights.pt**](https://weights.pt).
+* [**weights.pt**](https://drive.google.com/file/d/1VApyhdaiZxcULLts_a34n9RbB0JNOFoZ/view?usp=share_link)
 
 #### 2. Run Inference on Test Set
 To generate structures on the **test set** using the downloaded checkpoint, run the following command:

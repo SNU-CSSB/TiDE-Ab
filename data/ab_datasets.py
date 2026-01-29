@@ -155,9 +155,9 @@ class AbDataset(Dataset):
         rotmats_1 = rigids_1.get_rots().get_rot_mats()
         trans_1 = rigids_1.get_trans()
 
-        ###################################
         aatype_tensor = torch.tensor(processed_feats['aatype'])
         chain_idx = torch.tensor(chain_idx)
+        
         feats = {
             'aatype': aatype_tensor.float(), 
             'aatype_oh': torch.nn.functional.one_hot(aatype_tensor.long(), num_classes=21).float(),
@@ -168,12 +168,9 @@ class AbDataset(Dataset):
             'framework_mask': torch.tensor(framework_mask).float(), 
             'diffuse_mask': torch.tensor(diffuse_mask).float(),
             'res_mask': torch.ones_like(aatype_tensor).float(),
-            # 'res_mask': ~torch.tensor(processed_feats['missing'], dtype=torch.bool),
             'chain_index': chain_idx.float(), 
             'chain_idx_oh': torch.nn.functional.one_hot(chain_idx.long(), num_classes=3).float(),
             'residue_index': torch.tensor(residue_index).int(),
-            # 'inpaint_chains' : ':'.join([PDB_CHAIN_IDS[_] for _ in inpaint_chains]), 
-            # 'target_chains' : ':'.join([PDB_CHAIN_IDS[_] for _ in target_chains]),
             'file_path': csv_row.pdb_name,
             'hotspot_1d': hotspot.float(),
             'hotspot_2d': hotspot_mtx.float(), 
