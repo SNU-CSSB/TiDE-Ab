@@ -252,7 +252,7 @@ class Interpolant:
     
                 # Take reverse step
                 trans_t_2 = self._trans_euler_step(d_t, t_1, pred_trans_1, trans_t_1)
-                rotmats_t_2 = self._rots_euler_step(d_t, t_1, pred_rotmats_1, rotmats_t_1)
+                rotmats_t_2 = self._rots_euler_step(d_t, t_1, pred_rotmats_1.float(), rotmats_t_1.float())
                 
                 if trans_potential is not None:
                     with torch.inference_mode(False):

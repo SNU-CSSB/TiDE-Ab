@@ -17,7 +17,7 @@ import collections
 
 from data import utils as du
 from data import all_atom
-from experiments import utils as eu
+from utils import experiments_utils as eu
 from openfold.utils import rigid_utils as ru
 from openfold.data import data_transforms
 from analysis import utils as au

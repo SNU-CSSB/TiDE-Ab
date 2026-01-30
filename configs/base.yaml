@@ -28,10 +28,12 @@ interpolant:
     do_sde: False
   self_condition: ${model.edge_features.self_condition}
   inference_dir: './results'
+  inference_num_per_sample: 10
+
 
 experiment:
   seed: 123
-  num_devices: 4
+  num_devices: 1
   warm_start: null
   warm_start_cfg_override: True
   training:

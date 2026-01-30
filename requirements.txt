@@ -1,0 +1,15 @@
+numpy<2.0.0
+pandas
+scipy
+scikit-learn
+tqdm
+wandb
+pytorch-lightning
+hydra-core
+omegaconf
+biopython
+mdtraj
+einops
+gputil
+tmtools
+dm-tree

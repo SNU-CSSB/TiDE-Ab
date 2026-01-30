@@ -215,7 +215,10 @@ def save_traj(
         x0_traj: np.ndarray,
         diffuse_mask: np.ndarray,
         output_dir: str,
+        sidx = None,
         aatype = None,
+        chain_index = None,
+        residue_index = None,
     ):
     """Writes final sample and reverse diffusion trajectory.
 
@@ -241,9 +244,15 @@ def save_traj(
 
     # Write sample.
     diffuse_mask = diffuse_mask.astype(bool)
-    sample_path = os.path.join(output_dir, 'sample.pdb')
-    prot_traj_path = os.path.join(output_dir, 'bb_traj.pdb')
-    x0_traj_path = os.path.join(output_dir, 'x0_traj.pdb')
+    if sidx is None:
+        sample_path = os.path.join(output_dir, 'sample.pdb')
+        prot_traj_path = os.path.join(output_dir, 'bb_traj.pdb')
+        x0_traj_path = os.path.join(output_dir, 'x0_traj.pdb')
+    else:
+        sample_path = os.path.join(output_dir, f'sample_{sidx}.pdb')
+        prot_traj_path = os.path.join(output_dir, f'bb_traj_{sidx}.pdb')
+        x0_traj_path = os.path.join(output_dir, f'x0_traj_{sidx}.pdb')
+
 
     # Use b-factors to specify which residues are diffused.
     b_factors = np.tile((diffuse_mask * 100)[:, None], (1, 37))
@@ -251,6 +260,8 @@ def save_traj(
     sample_path = au.write_prot_to_pdb(
         sample,
         sample_path,
+        chain_index=chain_index,
+        residue_index=residue_index,
         b_factors=b_factors,
         no_indexing=True,
         aatype=aatype,
@@ -258,6 +269,8 @@ def save_traj(
     prot_traj_path = au.write_prot_to_pdb(
         bb_prot_traj,
         prot_traj_path,
+        chain_index=chain_index,
+        residue_index=residue_index,
         b_factors=b_factors,
         no_indexing=True,
         aatype=aatype,
@@ -265,6 +278,8 @@ def save_traj(
     x0_traj_path = au.write_prot_to_pdb(
         x0_traj,
         x0_traj_path,
+        chain_index=chain_index,
+        residue_index=residue_index,
         b_factors=b_factors,
         no_indexing=True,
         aatype=aatype

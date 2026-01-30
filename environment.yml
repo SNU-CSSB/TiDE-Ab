@@ -1,0 +1,31 @@
+name: tideab
+channels:
+  - pytorch
+  - nvidia
+  - pyg
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch=*=*cuda*
+  - torchvision=*=*cuda*
+  - torchaudio
+  - pytorch-cuda=12.4
+  - torch-scatter
+  - numpy<2.0.0
+  - pandas
+  - scipy
+  - scikit-learn
+  - tqdm
+  - pip
+  - pip:
+      - wandb
+      - pytorch-lightning
+      - hydra-core
+      - omegaconf
+      - biopython
+      - mdtraj
+      - einops
+      - gputil
+      - tmtools
+      - dm-tree

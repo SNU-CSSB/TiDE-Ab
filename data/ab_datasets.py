@@ -68,7 +68,7 @@ class AbDataModule(LightningDataModule):
     def val_dataloader(self):
         return DataLoader(
             self._val_dataset,
-            sampler=DistributedSampler(self._val_dataset, shuffle=False),
+            shuffle=False,
             num_workers=2,
             prefetch_factor=2,
             persistent_workers=True,

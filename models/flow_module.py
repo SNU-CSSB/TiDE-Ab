@@ -49,6 +49,7 @@ class FlowModule(LightningModule):
 
         self._checkpoint_dir = None
         self._inference_dir = self._infer_cfg.inference_dir
+        self._inference_num_per_sample = self._infer_cfg.inference_num_per_sample
 
 
     @property
@@ -360,42 +361,40 @@ class FlowModule(LightningModule):
         self._log_scalar("train/loss", train_loss, batch_size=num_batch)
         return train_loss
 
+
     def configure_optimizers(self):
         return torch.optim.AdamW(
             params=self.model.parameters(),
             **self._exp_cfg.optimizer
         )
 
+
     def predict_step(self, batch, batch_idx):
 
-        del batch_idx # Unused
         device = f'cuda:{torch.cuda.current_device()}'
         interpolant = Interpolant(self._infer_cfg) 
         interpolant.set_device(device)
 
-        sample_names = batch['file_path']
-        if isinstance(sample_names, str):
-            sample_names = [sample_names]
-        num_batch = len(sample_names)
+        sample_name = batch['file_path'][0]
+        sample_dir = os.path.join(self.inference_dir, sample_name)
+        os.makedirs(sample_dir, exist_ok=True)
+        
+        aatype = du.to_numpy(batch['aatype'].long())[0]
+        chain_index = du.to_numpy(batch['chain_index'].long())[0]
+        residue_index = du.to_numpy(batch['residue_index'].long())[0]
+        diffuse_mask = du.to_numpy(batch['diffuse_mask'])[0]
 
-        sample_dirs = [os.path.join(
-            self.inference_dir, f'sample_{name}')
-            for name in sample_names]
-
-        # Sample batch
-        atom37_traj, model_traj, _ = interpolant.sample(self.model, batch)
-
-        bb_trajs = du.to_numpy(torch.stack(atom37_traj, dim=0).transpose(0, 1))
-        for i in range(num_batch):
-            sample_dir = sample_dirs[i]
-            bb_traj = bb_trajs[i]
-            os.makedirs(sample_dir, exist_ok=True)
-            aatype = du.to_numpy(batch['aatype'].long())[0]
+        for i in range(self._inference_num_per_sample):
+            atom37_traj, model_traj, _ = interpolant.sample(self.model, batch, seed=batch_idx+i)
+            bb_traj = du.to_numpy(torch.stack(atom37_traj, dim=0).transpose(0, 1))[0]
             _ = eu.save_traj(
                 bb_traj[-1],
                 bb_traj,
                 np.flip(du.to_numpy(torch.concat(model_traj, dim=0)), axis=0),
-                du.to_numpy(batch['diffuse_mask'])[0],
+                diffuse_mask=diffuse_mask,
                 output_dir=sample_dir,
+                sidx=i,
                 aatype=aatype,
+                chain_index=chain_index,
+                residue_index=residue_index,
             )
