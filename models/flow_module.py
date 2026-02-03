@@ -3,23 +3,17 @@ import torch
 import time
 import os
 import random
-# import wandb
 import numpy as np
-import pandas as pd
 import logging
 import torch.distributed as dist
 from pytorch_lightning import LightningModule
-from analysis import metrics 
-from analysis import utils as au
 from models.flow_model import FlowModel
 from models import utils as mu
 from data.interpolant import Interpolant 
 from data import utils as du
 from data import all_atom
 from data import so3_utils
-from data import residue_constants
 from utils import experiments_utils as eu
-from pytorch_lightning.loggers.wandb import WandbLogger
 
 eps = 1e-6
 bonding_constraints = [(1.329, 0.014) , (116.568, 1.995) , (121.352, 2.315)] # in degree
@@ -101,7 +95,7 @@ class FlowModule(LightningModule):
     def model_step(self, noisy_batch: Any):
 
         training_cfg = self._exp_cfg.training
-        loss_mask = noisy_batch['res_mask'] * noisy_batch['diffuse_mask']
+        loss_mask = noisy_batch['res_mask']
         if torch.any(torch.sum(loss_mask, dim=-1) < 1):
             raise ValueError('Empty batch encountered')
         num_batch, num_res = loss_mask.shape
@@ -147,12 +141,8 @@ class FlowModule(LightningModule):
 
         # Backbone atom loss
         pred_bb_atoms = all_atom.to_atom37(pred_trans_1, pred_rotmats_1)[:, :, :3]
-        gt_bb_atoms *= training_cfg.bb_atom_scale / ts_norm_scale[..., None]
-        pred_bb_atoms *= training_cfg.bb_atom_scale / ts_norm_scale[..., None]
-        bb_atom_loss = torch.sum(
-            (gt_bb_atoms - pred_bb_atoms) ** 2 * loss_mask[..., None, None],
-            dim=(-1, -2, -3)
-        ) / loss_denom
+        bb_atoms_error = ((gt_bb_atoms - pred_bb_atoms) * (training_cfg.bb_atom_scale / ts_norm_scale[..., None])) ** 2 * loss_mask[..., None, None]
+        bb_atom_loss = torch.sum(bb_atoms_error , dim=(-1, -2, -3)) / loss_denom
 
         # Pairwise distance loss
         gt_flat_atoms = gt_bb_atoms.reshape([num_batch, num_res*3, 3])
@@ -161,20 +151,7 @@ class FlowModule(LightningModule):
         pred_flat_atoms = pred_bb_atoms.reshape([num_batch, num_res*3, 3])
         pred_pair_dists = torch.linalg.norm(
             pred_flat_atoms[:, :, None, :] - pred_flat_atoms[:, None, :, :], dim=-1)
-
-        flat_loss_mask = torch.tile(loss_mask[:, :, None], (1, 1, 3))
-        flat_loss_mask = flat_loss_mask.reshape([num_batch, num_res*3])
-        flat_res_mask = torch.tile(loss_mask[:, :, None], (1, 1, 3))
-        flat_res_mask = flat_res_mask.reshape([num_batch, num_res*3])
-
-        gt_pair_dists = gt_pair_dists * flat_loss_mask[..., None]
-        pred_pair_dists = pred_pair_dists * flat_loss_mask[..., None]
-        pair_dist_mask = flat_loss_mask[..., None] * flat_res_mask[:, None, :]
-
-        dist_mat_loss = torch.sum(
-            (gt_pair_dists - pred_pair_dists)**2 * pair_dist_mask,
-            dim=(1, 2))
-        dist_mat_loss /= (torch.sum(pair_dist_mask, dim=(1, 2)) + 1)
+        dist_mat_loss = torch.mean((gt_pair_dists - pred_pair_dists)**2, dim=(1, 2))
 
         se3_vf_loss = trans_loss + rots_vf_loss
         auxiliary_loss = (
@@ -183,7 +160,7 @@ class FlowModule(LightningModule):
         )
         auxiliary_loss *= (ts_[:, 0] > training_cfg.aux_loss_t_pass)
         auxiliary_loss *= self._exp_cfg.training.aux_loss_weight
-        auxiliary_loss = torch.tanh(auxiliary_loss / 5.0)
+        auxiliary_loss = 5.0 * torch.tanh(auxiliary_loss / 5.0)
 
         se3_vf_loss += auxiliary_loss
         if torch.any(torch.isnan(se3_vf_loss)):
@@ -195,11 +172,16 @@ class FlowModule(LightningModule):
             "rots_vf_loss": rots_vf_loss,
                         }
 
-        if self.current_epoch>training_cfg.start_steric_loss and training_cfg.clash_loss_weight > 0:
-            ## btw_residue_class_loss
+        if self.current_epoch>=training_cfg.start_steric_loss and training_cfg.clash_loss_weight > 0:
+            
+            #############################################
+            ## Clash Loss (Van der Waals violation)
+            ############################################# 
+            
+            # Shape: (batch, num_res, num_res, 3, 3)
             dists = torch.sqrt(eps + torch.sum((pred_bb_atoms[..., :, None, :, None, :] - pred_bb_atoms[..., None, :, None, :, :])** 2,dim=-1,))
             dists_mask = torch.triu(torch.ones(dists.size()[:3]), diagonal=2)[..., None, None].repeat(1,1,1,3,3).to(device)
-            dists_mask *= (ts_[...,None,None,None] > training_cfg.clash_loss_t_pass)
+            dists_mask *= (ts_[...,None,None,None] > training_cfg.steric_loss_t_pass)
             
             # Compute the lower bound for the allowed distances. shape (N, N, 3, 3)
             atom_radius = (torch.tensor([[[1.55, 1.7, 1.7]]])).to(device) # van_der_waals_radius = {'C': 1.7, 'N': 1.55, 'O': 1.52}
@@ -207,52 +189,61 @@ class FlowModule(LightningModule):
             
             # Compute the error. shape (N, N, 3, 3)
             dists_to_low_error = dists_mask * torch.nn.functional.relu(dists_lower_bound - dists - clash_tolerance[0]) 
-            btw_residue_clash_loss = training_cfg.clash_loss_weight * torch.sum(dists_to_low_error, dim=(1,2,3,4))
+            clash_denom = torch.sum(dists_mask, dim=(1, 2, 3, 4)) + 1e-6
+            btw_residue_clash_loss = torch.sum(dists_to_low_error, dim=(1, 2, 3, 4)) / clash_denom
+            btw_residue_clash_loss *= training_cfg.clash_loss_weight
             se3_vf_loss += btw_residue_clash_loss
             batch_losses["clash_loss"] = btw_residue_clash_loss
 
+            #############################################
+            ## Bond Loss (C-N bond length + bond angles)
+            #############################################
+
             ## btw_residue_bond_loss
-            this_ca_pos = pred_bb_atoms[..., :-1, 1, :]
-            this_c_pos = pred_bb_atoms[..., :-1, 2, :]
-            next_n_pos = pred_bb_atoms[..., 1:, 0, :]
-            next_ca_pos = pred_bb_atoms[..., 1:, 1, :]
+            this_ca_pos = pred_bb_atoms[..., :-1, 1, :]   # CA_i
+            this_c_pos = pred_bb_atoms[..., :-1, 2, :]    # C_i
+            next_n_pos = pred_bb_atoms[..., 1:, 0, :]     # N_{i+1}
+            next_ca_pos = pred_bb_atoms[..., 1:, 1, :]    # CA_{i+1}
 
             has_no_gap_mask = ((noisy_batch['residue_index'][..., 1:]) == noisy_batch['residue_index'][..., :-1] + 1).to(device)
             fls = torch.tensor([[False]]).repeat(noisy_batch['residue_index'].shape[0],1).to(device)
             has_no_gap_mask_f = torch.cat([fls, has_no_gap_mask], dim=-1)
             has_no_gap_mask_b = torch.cat([has_no_gap_mask, fls], dim=-1)
             has_no_gap_mask = (has_no_gap_mask_f * has_no_gap_mask_b)[..., :-1]
-            has_no_gap_mask *= (ts_ > training_cfg.clash_loss_t_pass)
+            has_no_gap_mask = has_no_gap_mask.float()
+            has_no_gap_mask *= (ts_ > training_cfg.steric_loss_t_pass).float()
             
-            # Compute loss for the C--N bond.
-            c_n_bond_length = torch.sqrt(eps + torch.sum((this_c_pos - next_n_pos) ** 2, dim=-1))
+            # --- C-N Bond Length Loss ---
+            c_n_bond_length = torch.sqrt(torch.clamp(torch.sum((this_c_pos - next_n_pos) ** 2, dim=-1), min=eps))
             gt_length, gt_stddev = [torch.ones_like(c_n_bond_length) * v for v in bonding_constraints[0]]
             c_n_bond_length_error = torch.sqrt(eps + (c_n_bond_length - gt_length) ** 2)
             c_n_loss_per_residue = torch.nn.functional.relu(c_n_bond_length_error - gt_stddev * clash_tolerance[1])
             c_n_loss = torch.sum(has_no_gap_mask * c_n_loss_per_residue, dim=-1)
             
-            # Compute loss for the angles.
-            ca_c_bond_length = torch.sqrt(eps + torch.sum((this_ca_pos - this_c_pos) ** 2, dim=-1))
-            n_ca_bond_length = torch.sqrt(eps + torch.sum((next_n_pos - next_ca_pos) ** 2, dim=-1))
-            c_ca_unit_vec = (this_ca_pos - this_c_pos) / ca_c_bond_length[..., None]
-            c_n_unit_vec = (next_n_pos - this_c_pos) / c_n_bond_length[..., None]
-            n_ca_unit_vec = (next_ca_pos - next_n_pos) / n_ca_bond_length[..., None]
+            # --- Bond Angle Losses ---
+            ca_c_bond_length = torch.sqrt(torch.clamp(torch.sum((this_ca_pos - this_c_pos) ** 2, dim=-1), min=eps))
+            n_ca_bond_length = torch.sqrt(torch.clamp(torch.sum((next_n_pos - next_ca_pos) ** 2, dim=-1), min=eps))
+            c_ca_unit_vec = (this_ca_pos - this_c_pos) / torch.clamp(ca_c_bond_length[..., None], min=eps)
+            c_n_unit_vec = (next_n_pos - this_c_pos) / torch.clamp(c_n_bond_length[..., None], min=eps)
+            n_ca_unit_vec = (next_ca_pos - next_n_pos) / torch.clamp(n_ca_bond_length[..., None], min=eps)
             
             gt_angle, gt_stddev = bonding_constraints[1]
             ca_c_n_cos_angle = torch.sum(c_ca_unit_vec * c_n_unit_vec, dim=-1)
-            ca_c_n_cos_angle = torch.rad2deg(torch.arccos(torch.clamp(ca_c_n_cos_angle, -1, 1)))
+            ca_c_n_cos_angle = torch.rad2deg(torch.arccos(torch.clamp(ca_c_n_cos_angle, -1 + eps, 1 - eps)))
             ca_c_n_cos_angle_error = torch.sqrt(eps + (ca_c_n_cos_angle - gt_angle) ** 2)
             ca_c_n_loss_per_residue = torch.nn.functional.relu(ca_c_n_cos_angle_error - gt_stddev * clash_tolerance[2])
             ca_c_n_loss = torch.sum(has_no_gap_mask * ca_c_n_loss_per_residue, dim=-1)
             
             gt_angle, gt_stddev = bonding_constraints[2]
             c_n_ca_cos_angle = torch.sum((-c_n_unit_vec) * n_ca_unit_vec, dim=-1)
-            c_n_ca_cos_angle = torch.rad2deg(torch.arccos(torch.clamp(c_n_ca_cos_angle, -1, 1)))
-            c_n_ca_cos_angle_error = torch.sqrt(eps + torch.square(c_n_ca_cos_angle - gt_angle))
+            c_n_ca_cos_angle = torch.rad2deg(torch.arccos(torch.clamp(c_n_ca_cos_angle, -1 + eps, 1 - eps)))
+            c_n_ca_cos_angle_error = torch.sqrt(eps + (c_n_ca_cos_angle - gt_angle) ** 2)
             c_n_ca_loss_per_residue = torch.nn.functional.relu(c_n_ca_cos_angle_error - gt_stddev * clash_tolerance[3])
             c_n_ca_loss = torch.sum(has_no_gap_mask * c_n_ca_loss_per_residue, dim=-1)
 
-            btw_residue_loss = training_cfg.clash_loss_weight * (c_n_loss + ca_c_n_loss + c_n_ca_loss)
+            bond_denom = torch.sum(has_no_gap_mask, dim=-1) + 1e-6  # Zero division 방지
+            btw_residue_loss = (c_n_loss + ca_c_n_loss + c_n_ca_loss) / bond_denom
+            btw_residue_loss = training_cfg.clash_loss_weight * (5.0 * torch.tanh(btw_residue_loss / 5.0))
             se3_vf_loss += btw_residue_loss
             batch_losses["bond_loss"] = btw_residue_loss
 
@@ -276,23 +267,41 @@ class FlowModule(LightningModule):
         return val_loss
 
 
+    def validation_step(self, batch: Any, batch_idx: int):
+        self.interpolant.set_device(batch['aatype'].device)
+        noisy_batch = self.interpolant.corrupt_batch(batch)
+        batch_losses = self.model_step(noisy_batch)
+        
+        num_batch = batch_losses['trans_loss'].shape[0]
+        self.validation_epoch_metrics.append({
+            k: v.detach() for k, v in batch_losses.items()
+        })
+        
+        val_loss = batch_losses['se3_vf_loss'].mean()
+        return val_loss
+
+
     def on_validation_epoch_end(self):
         if not self.validation_epoch_metrics:
             return
 
         keys = self.validation_epoch_metrics[0].keys()
+        aggregated_metrics = {}
+        
         for key in keys:
             all_vals = [m[key] for m in self.validation_epoch_metrics]
-            avg_val = torch.stack(all_vals).mean()
-            
-            self._log_scalar(
-                f'valid/{key.replace("val_", "")}',
-                avg_val,
-                on_step=False,
-                on_epoch=True,
-                prog_bar=True
-            )
-            
+            stacked = torch.cat([v.flatten() for v in all_vals])
+            aggregated_metrics[key] = stacked.mean()
+        
+        self.log('valid/trans_loss', aggregated_metrics['trans_loss'], 
+                on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log('valid/se3_vf_loss', aggregated_metrics['se3_vf_loss'],
+                on_epoch=True, prog_bar=True, sync_dist=True)
+        for key, value in aggregated_metrics.items():
+            if key not in ['trans_loss', 'se3_vf_loss']:
+                self.log(f'valid/{key}', value, 
+                        on_epoch=True, prog_bar=False, sync_dist=True)
+        
         self.validation_epoch_metrics.clear()
 
 
@@ -361,13 +370,11 @@ class FlowModule(LightningModule):
         self._log_scalar("train/loss", train_loss, batch_size=num_batch)
         return train_loss
 
-
     def configure_optimizers(self):
         return torch.optim.AdamW(
             params=self.model.parameters(),
             **self._exp_cfg.optimizer
         )
-
 
     def predict_step(self, batch, batch_idx):
 
@@ -378,7 +385,7 @@ class FlowModule(LightningModule):
         sample_name = batch['file_path'][0]
         sample_dir = os.path.join(self.inference_dir, sample_name)
         os.makedirs(sample_dir, exist_ok=True)
-        
+
         aatype = du.to_numpy(batch['aatype'].long())[0]
         chain_index = du.to_numpy(batch['chain_index'].long())[0]
         residue_index = du.to_numpy(batch['residue_index'].long())[0]

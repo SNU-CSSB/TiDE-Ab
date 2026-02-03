@@ -5,8 +5,6 @@ defaults:
 
 interpolant:
   min_t: 1e-2
-  twisting:
-    use: False
   rots:
     corrupt: True
     sample_schedule: exp
@@ -30,7 +28,6 @@ interpolant:
   inference_dir: './results'
   inference_num_per_sample: 10
 
-
 experiment:
   seed: 123
   num_devices: 1
@@ -43,14 +40,14 @@ experiment:
     translation_loss_weight: 2.0
     t_normalize_clip: 0.9
     rotation_loss_weights: 1.0
-    aux_loss_weight: 1.5
+    aux_loss_weight: 0.5
     aux_loss_use_bb_loss: true
     aux_loss_use_pair_loss: true
-    aux_loss_t_pass: 0.5
-    start_steric_loss: 200
-    clash_loss_weight: 0.01
-    clash_loss_t_pass: 0.5
-    bond_loss_weight: 0.0
+    aux_loss_t_pass: 0.3
+    start_steric_loss: 150
+    bond_loss_weight: 0.1
+    clash_loss_weight: 0.1
+    steric_loss_t_pass: 0.5
     clash_overlap_tolerance_soft: 1.0
     clash_tolerance_factor_soft: 1.0
 
@@ -66,12 +63,14 @@ experiment:
     accelerator: gpu
     log_every_n_steps: 500
     deterministic: False
-    strategy: auto
+    strategy: ddp
     check_val_every_n_epoch: 5
     accumulate_grad_batches: 2
   checkpointer:
     dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    filename: "best-{epoch:02d}-{valid/se3_vf_loss:.4f}"
     save_last: True
     save_top_k: 3
-    monitor: valid/trans_loss
+    monitor: valid/se3_vf_loss
     mode: min
+    auto_insert_metric_name: False

@@ -5,8 +5,6 @@ from data import utils as du
 from scipy.spatial.transform import Rotation
 from data import all_atom
 import copy
-from torch import autograd
-from motif_scaffolding import twisting
 from tqdm import tqdm
 import numpy as np
 
@@ -137,14 +135,13 @@ class Interpolant:
         pred_trans_1 = pred_trans_1 + gd_scale * (pred_trans_1 - neg_pred_trans_1)
         return pred_trans_1, pred_rotmats_1
 
-    def sample(self, model, batch, num_timesteps=None, trans_potential=None, trans_0=None, rotmats_0=None, ts=None, seed=None):
+    def sample(self, model, batch, num_timesteps=None, trans_0=None, rotmats_0=None, ts=None, seed=None):
         res_mask = batch['res_mask']
         num_batch, num_res = res_mask.shape
         diffuse_mask = batch['diffuse_mask']
         motif_mask = ~diffuse_mask.bool().squeeze(0)
         trans_1 = batch['trans_1']
         rotmats_1 = batch['rotmats_1']
-        
 
         # Set-up initial prior samples
         if 'trans_0' not in batch:
@@ -152,33 +149,14 @@ class Interpolant:
         if 'rotmats_0' not in batch:
             rotmats_0 = _uniform_so3(num_batch, num_res, self._device, seed)
 
-        if not self._cfg.twisting.use: # amortisation
-            diffuse_mask = diffuse_mask.expand(num_batch, -1) # shape = (B, num_residue)
-            batch['diffuse_mask'] = diffuse_mask
-            rotmats_0 = _rots_diffuse_mask(rotmats_0, rotmats_1, diffuse_mask)
-            trans_0 = _trans_diffuse_mask(trans_0, trans_1, diffuse_mask)
-            if torch.isnan(trans_0).any():
-                raise ValueError('NaN detected in trans_0')
+        diffuse_mask = diffuse_mask.expand(num_batch, -1) # shape = (B, num_residue)
+        batch['diffuse_mask'] = diffuse_mask
+        rotmats_0 = _rots_diffuse_mask(rotmats_0, rotmats_1, diffuse_mask)
+        trans_0 = _trans_diffuse_mask(trans_0, trans_1, diffuse_mask)
+        if torch.isnan(trans_0).any():
+            raise ValueError('NaN detected in trans_0')
 
         logs_traj = defaultdict(list)
-        if self._cfg.twisting.use: # sampling / guidance
-            assert trans_1.shape[0] == 1 # assume only one motif
-            motif_locations = torch.nonzero(motif_mask).squeeze().tolist()
-            true_motif_locations, motif_segments_length = twisting.find_ranges_and_lengths(motif_locations)
-
-            # Marginalise both rotation and motif location
-            assert len(motif_mask.shape) == 1
-            trans_motif = trans_1[:, motif_mask]  # [1, motif_res, 3]
-            R_motif = rotmats_1[:, motif_mask]  # [1, motif_res, 3, 3]
-            num_res = trans_1.shape[-2]
-            with torch.inference_mode(False):
-                motif_locations = true_motif_locations if self._cfg.twisting.motif_loc else None
-                F, motif_locations = twisting.motif_offsets_and_rots_vec_F(num_res, motif_segments_length, motif_locations=motif_locations, 
-                                                                           num_rots=self._cfg.twisting.num_rots, align=self._cfg.twisting.align, 
-                                                                           scale=self._cfg.twisting.scale_rots, trans_motif=trans_motif, 
-                                                                           R_motif=R_motif, max_offsets=self._cfg.twisting.max_offsets, 
-                                                                           device=self._device, return_rots=False)
-
         if motif_mask is not None and len(motif_mask.shape) == 1:
             motif_mask = motif_mask[None].expand((num_batch, -1))
 
@@ -193,7 +171,7 @@ class Interpolant:
         prot_traj = [(trans_0, rotmats_0)]
         clean_traj = []
 
-        cfg_gd_sched = 1.0 * (1 + (torch.cos(torch.pi*ts)+1)/2) # cosine annealing
+        cfg_gd_sched = 1.0 * (1 - (-torch.cos(torch.pi*ts)+1)/2) # cosine annealing
         cfg_gd_sched[int(len(ts)*0.5):] = 0.0 # early truncation
 
         with tqdm(total=len(ts[1:]), bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}') as pbar:
@@ -216,19 +194,8 @@ class Interpolant:
                     batch['rotmats_t'] = rotmats_1
                 batch['t'] = torch.ones((num_batch, 1), device=self._device) * t_1
                 d_t = t_2 - t_1
-    
-                use_twisting = self._cfg.twisting.use and t_1 >= self._cfg.twisting.t_min
-    
-                if use_twisting: # Reconstruction guidance
-                    with torch.inference_mode(False):
-                        batch, Log_delta_R, delta_x = twisting.perturbations_for_grad(batch)
-                        model_out = model(batch)
-                        t = batch['t']
-                        trans_t_1, rotmats_t_1, logs_traj = self.guidance(trans_t_1, rotmats_t_1, model_out, motif_mask, R_motif, 
-                                                                          trans_motif, Log_delta_R, delta_x, t, d_t, logs_traj)
-                else:
-                    with torch.no_grad():
-                        model_out = model(batch)
+                with torch.no_grad():
+                    model_out = model(batch)
     
                 # Process model output.
                 pred_trans_1 = model_out['pred_trans']
@@ -244,8 +211,7 @@ class Interpolant:
                         neg_model_out = model(neg_batch)
                     neg_pred_trans_1 = neg_model_out['pred_trans']
                     neg_pred_rotmats_1 = neg_model_out['pred_rotmats']
-                    if self.use_cfg:
-                        pred_trans_1, pred_rotmats_1 = self.apply_cfg(pred_trans_1, neg_pred_trans_1, pred_rotmats_1, neg_pred_rotmats_1, cfg_gd_sched[i])
+                    pred_trans_1, pred_rotmats_1 = self.apply_cfg(pred_trans_1, neg_pred_trans_1, pred_rotmats_1, neg_pred_rotmats_1, cfg_gd_sched[i])
 
                 clean_traj.append((pred_trans_1.detach().cpu(), pred_rotmats_1.detach().cpu()))
                 batch['trans_sc'] = (pred_trans_1 * diffuse_mask[..., None] + trans_1 * (1 - diffuse_mask[..., None]))
@@ -254,17 +220,8 @@ class Interpolant:
                 trans_t_2 = self._trans_euler_step(d_t, t_1, pred_trans_1, trans_t_1)
                 rotmats_t_2 = self._rots_euler_step(d_t, t_1, pred_rotmats_1.float(), rotmats_t_1.float())
                 
-                if trans_potential is not None:
-                    with torch.inference_mode(False):
-                        grad_pred_trans_1 = pred_trans_1.clone().detach().requires_grad_(True)
-                        pred_trans_potential = autograd.grad(outputs=trans_potential(grad_pred_trans_1), inputs=grad_pred_trans_1)[0]
-                    if self._trans_cfg.potential_t_scaling:
-                        trans_t_2 -= t_1 / (1 - t_1) * pred_trans_potential * d_t
-                    else:
-                        trans_t_2 -= pred_trans_potential * d_t
-                if not self._cfg.twisting.use:
-                    trans_t_2 = _trans_diffuse_mask(trans_t_2, trans_1, diffuse_mask)
-                    rotmats_t_2 = _rots_diffuse_mask(rotmats_t_2, rotmats_1, diffuse_mask)
+                trans_t_2 = _trans_diffuse_mask(trans_t_2, trans_1, diffuse_mask)
+                rotmats_t_2 = _rots_diffuse_mask(rotmats_t_2, rotmats_1, diffuse_mask)
     
                 prot_traj.append((trans_t_2, rotmats_t_2))
                 t_1 = t_2
@@ -301,8 +258,7 @@ class Interpolant:
                 neg_model_out = model(neg_batch)
             neg_pred_trans_1 = neg_model_out['pred_trans']
             neg_pred_rotmats_1 = neg_model_out['pred_rotmats']
-            if self.use_cfg:
-                pred_trans_1, pred_rotmats_1 = self.apply_cfg(pred_trans_1, neg_pred_trans_1, pred_rotmats_1, neg_pred_rotmats_1, cfg_gd_sched[i])
+            pred_trans_1, pred_rotmats_1 = self.apply_cfg(pred_trans_1, neg_pred_trans_1, pred_rotmats_1, neg_pred_rotmats_1, cfg_gd_sched[i])
 
         clean_traj.append((pred_trans_1.detach().cpu(), pred_rotmats_1.detach().cpu()))
         prot_traj.append((pred_trans_1, pred_rotmats_1))

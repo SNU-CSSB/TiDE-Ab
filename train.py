@@ -29,8 +29,8 @@ class Experiment:
         self._datamodule = AbDataModule(data_cfg=self._data_cfg)
         self._datamodule.setup()
 
-        self._train_device_ids = eu.get_available_device(self._exp_cfg.num_devices)
-        log.info(f"Training with devices: {self._train_device_ids}")
+        self._train_device_ids = self._exp_cfg.num_devices 
+        log.info(f"Training with {self._train_device_ids} devices")
         self._module = FlowModule(self._cfg)
 
 
@@ -40,7 +40,6 @@ class Experiment:
         
         # Checkpoint directory.
         ckpt_dir = self._exp_cfg.checkpointer.dirpath
-        os.makedirs(ckpt_dir, exist_ok=True)
         log.info(f"Checkpoints saved to {ckpt_dir}")
         
         # Model checkpoints
@@ -49,6 +48,7 @@ class Experiment:
         # Save config only for main process.
         local_rank = os.environ.get('LOCAL_RANK', 0)
         if local_rank == 0:
+            os.makedirs(ckpt_dir, exist_ok=True)
             cfg_path = os.path.join(ckpt_dir, 'config.yaml')
             with open(cfg_path, 'w') as f:
                 OmegaConf.save(config=self._cfg, f=f.name)

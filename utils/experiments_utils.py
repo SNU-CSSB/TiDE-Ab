@@ -6,12 +6,9 @@ import copy
 import random
 import GPUtil
 import numpy as np
-import pandas as pd
 from analysis import utils as au
 from data import utils as du
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
-from motif_scaffolding import save_motif_segments
-from openfold.utils import rigid_utils as ru
 from data.all_atom import compute_backbone
 from Bio.PDB import PDBParser, Superimposer
 from Bio.PDB import PDBIO

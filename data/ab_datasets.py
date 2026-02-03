@@ -7,12 +7,8 @@ import os
 
 from torch.utils.data import Dataset
 from data import utils as du
-from openfold.data import data_transforms
 from openfold.utils.rigid_utils import Rotation, Rigid
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
 from scipy.stats import special_ortho_group
-from utils import experiments_utils as eu
 
 from pytorch_lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
